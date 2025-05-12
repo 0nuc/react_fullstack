@@ -1,32 +1,11 @@
-const { MenuItem } = require('../models');
-const { Op } = require('sequelize');
+const db = require('../config/database');
 
 const getAllMenuItems = async (req, res) => {
     try {
-        const { category, maxPrice } = req.query;
-
-        const where = {};
-
-        if (category) {
-            where.category = category;
-        }
-
-        if (maxPrice) {
-            where.price = {
-                [Op.lte]: parseFloat(maxPrice)
-            };
-        }
-
-        const menuItems = await MenuItem.findAll({
-            where,
-            order: [
-                ['category', 'ASC'],
-                ['name', 'ASC']
-            ]
-        });
-
+        const [items] = await db.query('SELECT * FROM menu_items WHERE is_available = true ORDER BY category, name');
+        
         // Grouper les items par catégorie
-        const menuByCategory = menuItems.reduce((acc, item) => {
+        const menuByCategory = items.reduce((acc, item) => {
             if (!acc[item.category]) {
                 acc[item.category] = [];
             }
@@ -39,35 +18,33 @@ const getAllMenuItems = async (req, res) => {
             data: menuByCategory
         });
     } catch (error) {
+        console.error('Erreur getAllMenuItems:', error);
         res.status(500).json({
             success: false,
-            message: 'Erreur lors de la récupération du menu',
-            error: error.message
+            message: 'Erreur lors de la récupération du menu'
         });
     }
 };
 
 const createMenuItem = async (req, res) => {
     try {
-        const { name, description, price, category, imageUrl } = req.body;
-
-        const menuItem = await MenuItem.create({
-            name,
-            description,
-            price,
-            category,
-            imageUrl
-        });
+        const { name, description, price, category, image_url } = req.body;
+        
+        const [result] = await db.query(
+            'INSERT INTO menu_items (name, description, price, category, image_url) VALUES (?, ?, ?, ?, ?)',
+            [name, description, price, category, image_url]
+        );
 
         res.status(201).json({
             success: true,
-            data: menuItem
+            message: 'Item ajouté au menu avec succès',
+            data: { id: result.insertId }
         });
     } catch (error) {
+        console.error('Erreur createMenuItem:', error);
         res.status(400).json({
             success: false,
-            message: 'Erreur lors de la création de l\'item du menu',
-            error: error.message
+            message: 'Erreur lors de la création de l\'item'
         });
     }
 };
@@ -75,35 +52,29 @@ const createMenuItem = async (req, res) => {
 const updateMenuItem = async (req, res) => {
     try {
         const { id } = req.params;
-        const { name, description, price, category, imageUrl, isAvailable } = req.body;
+        const { name, description, price, category, image_url, is_available } = req.body;
+        
+        const [result] = await db.query(
+            'UPDATE menu_items SET name = ?, description = ?, price = ?, category = ?, image_url = ?, is_available = ? WHERE id = ?',
+            [name, description, price, category, image_url, is_available, id]
+        );
 
-        const menuItem = await MenuItem.findByPk(id);
-
-        if (!menuItem) {
+        if (result.affectedRows === 0) {
             return res.status(404).json({
                 success: false,
-                message: 'Item du menu non trouvé'
+                message: 'Item non trouvé'
             });
         }
 
-        await menuItem.update({
-            name,
-            description,
-            price,
-            category,
-            imageUrl,
-            isAvailable
-        });
-
         res.json({
             success: true,
-            data: menuItem
+            message: 'Item mis à jour avec succès'
         });
     } catch (error) {
+        console.error('Erreur updateMenuItem:', error);
         res.status(400).json({
             success: false,
-            message: 'Erreur lors de la modification de l\'item du menu',
-            error: error.message
+            message: 'Erreur lors de la mise à jour de l\'item'
         });
     }
 };
@@ -111,27 +82,25 @@ const updateMenuItem = async (req, res) => {
 const deleteMenuItem = async (req, res) => {
     try {
         const { id } = req.params;
+        
+        const [result] = await db.query('DELETE FROM menu_items WHERE id = ?', [id]);
 
-        const menuItem = await MenuItem.findByPk(id);
-
-        if (!menuItem) {
+        if (result.affectedRows === 0) {
             return res.status(404).json({
                 success: false,
-                message: 'Item du menu non trouvé'
+                message: 'Item non trouvé'
             });
         }
 
-        await menuItem.destroy();
-
         res.json({
             success: true,
-            message: 'Item du menu supprimé avec succès'
+            message: 'Item supprimé avec succès'
         });
     } catch (error) {
+        console.error('Erreur deleteMenuItem:', error);
         res.status(500).json({
             success: false,
-            message: 'Erreur lors de la suppression de l\'item du menu',
-            error: error.message
+            message: 'Erreur lors de la suppression de l\'item'
         });
     }
 };

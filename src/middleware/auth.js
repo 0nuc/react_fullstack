@@ -1,35 +1,50 @@
 const jwt = require('jsonwebtoken');
-const { User } = require('../models');
+const jwtConfig = require('../config/jwt');
+const db = require('../config/database');
 
 const auth = async (req, res, next) => {
     try {
         const token = req.header('Authorization')?.replace('Bearer ', '');
-
         if (!token) {
-            return res.status(401).json({
+            return res.status(401).json({ 
                 success: false,
-                message: 'Authentification requise'
+                message: 'Authentification requise' 
             });
         }
 
-        const decoded = jwt.verify(token, process.env.JWT_SECRET);
-        const user = await User.findByPk(decoded.id);
-
-        if (!user) {
-            throw new Error();
+        const decoded = jwt.verify(token, jwtConfig.secret);
+        const [users] = await db.query('SELECT * FROM users WHERE id = ?', [decoded.id]);
+        
+        if (!users.length) {
+            throw new Error('Utilisateur non trouvé');
         }
 
-        req.user = user;
+        req.user = users[0];
         next();
     } catch (error) {
-        res.status(401).json({
+        res.status(401).json({ 
             success: false,
-            message: 'Token invalide ou expiré'
+            message: 'Token invalide ou expiré' 
         });
     }
 };
 
-
+const isAdmin = async (req, res, next) => {
+    try {
+        if (req.user.role !== 'admin') {
+            return res.status(403).json({ 
+                success: false,
+                message: 'Accès refusé. Droits administrateur requis.' 
+            });
+        }
+        next();
+    } catch (error) {
+        res.status(500).json({ 
+            success: false,
+            message: 'Erreur lors de la vérification des droits administrateur' 
+        });
+    }
+};
 
 module.exports = {
     auth,

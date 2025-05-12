@@ -1,289 +1,268 @@
-const { Reservation, Table, User } = require('../models');
-const { Op } = require('sequelize');
+const db = require('../config/database');
 
 // Fonction utilitaire pour vérifier la disponibilité des tables
-const findAvailableTables = async (numberOfPeople, date, time) => {
-    const tables = await Table.findAll({
-        where: { isAvailable: true },
-        order: [['seats', 'ASC']]
-    });
+const checkTableAvailability = async (date, time, numberOfPeople) => {
+    try {
+        // 1. Récupérer toutes les tables
+        const [tables] = await db.query('SELECT * FROM tables ORDER BY seats ASC');
+        
+        // 2. Récupérer les tables déjà réservées pour ce créneau
+        const [reservedTables] = await db.query(
+            'SELECT rt.table_id FROM reservations r ' +
+            'JOIN reservation_tables rt ON r.id = rt.reservation_id ' +
+            'WHERE r.date = ? AND r.time = ? AND r.status != "cancelled"',
+            [date, time]
+        );
 
-    const reservedTables = await Reservation.findAll({
-        where: {
-            date,
-            time,
-            status: {
-                [Op.ne]: 'cancelled'
+        // Créer un ensemble des IDs des tables réservées
+        const reservedTableIds = new Set(reservedTables.map(rt => rt.table_id));
+
+        // 3. Filtrer les tables disponibles
+        const availableTables = tables.filter(table => !reservedTableIds.has(table.id));
+
+        // 4. Trouver la meilleure combinaison de tables
+        let remainingPeople = numberOfPeople;
+        const selectedTables = [];
+        
+        // Première passe : chercher les tables parfaites
+        for (const table of availableTables) {
+            if (table.seats === remainingPeople) {
+                selectedTables.push(table);
+                remainingPeople = 0;
+                break;
             }
-        },
-        include: [{
-            model: Table,
-            as: 'tables'
-        }]
-    });
-
-    const reservedTableIds = new Set(
-        reservedTables.flatMap(res => res.tables.map(table => table.id))
-    );
-
-    const availableTables = tables.filter(table => !reservedTableIds.has(table.id));
-
-    // Algorithme simple pour trouver la meilleure combinaison de tables
-    let remainingPeople = numberOfPeople;
-    const selectedTables = [];
-
-    for (const table of availableTables) {
-        if (remainingPeople <= 0) break;
-        if (table.seats <= remainingPeople + 2) { // +2 pour éviter de trop petites tables
-            selectedTables.push(table);
-            remainingPeople -= table.seats;
         }
-    }
 
-    return remainingPeople <= 0 ? selectedTables : null;
+        // Deuxième passe : si pas de table parfaite, combiner les tables
+        if (remainingPeople > 0) {
+            for (const table of availableTables) {
+                if (!selectedTables.includes(table) && table.seats <= remainingPeople + 2) {
+                    selectedTables.push(table);
+                    remainingPeople -= table.seats;
+                    if (remainingPeople <= 0) break;
+                }
+            }
+        }
+
+        // Vérifier si on a trouvé une solution
+        return remainingPeople <= 0 ? selectedTables : null;
+    } catch (error) {
+        console.error('Erreur lors de la vérification des tables:', error);
+        return null;
+    }
 };
 
+// Obtenir toutes les réservations (admin)
 const getAllReservations = async (req, res) => {
     try {
-        const reservations = await Reservation.findAll({
-            include: [
-                {
-                    model: User,
-                    as: 'user',
-                    attributes: ['firstName', 'lastName', 'email', 'phone']
-                },
-                {
-                    model: Table,
-                    as: 'tables',
-                    through: { attributes: [] }
-                }
-            ]
-        });
+        const [reservations] = await db.query(
+            `SELECT r.*, u.firstName, u.lastName, u.phone, t.number as table_number, t.seats 
+            FROM reservations r 
+            JOIN users u ON r.user_id = u.id 
+            JOIN reservation_tables rt ON r.id = rt.reservation_id 
+            JOIN tables t ON rt.table_id = t.id 
+            ORDER BY r.reservation_date ASC, r.reservation_time ASC`
+        );
 
         res.json({
             success: true,
-            data: reservations
+            reservations
         });
     } catch (error) {
+        console.error('Erreur récupération réservations:', error);
         res.status(500).json({
             success: false,
-            message: 'Erreur lors de la récupération des réservations',
-            error: error.message
+            message: 'Erreur lors de la récupération des réservations'
         });
     }
 };
 
-const getMyReservations = async (req, res) => {
+// Obtenir les réservations d'un utilisateur
+const getUserReservations = async (req, res) => {
     try {
-        const reservations = await Reservation.findAll({
-            where: { userId: req.user.id },
-            include: [{
-                model: Table,
-                as: 'tables',
-                through: { attributes: [] }
-            }]
-        });
+        const [reservations] = await db.query(
+            `SELECT r.*, t.number as table_number, t.seats 
+            FROM reservations r 
+            JOIN reservation_tables rt ON r.id = rt.reservation_id 
+            JOIN tables t ON rt.table_id = t.id 
+            WHERE r.user_id = ? 
+            ORDER BY r.reservation_date ASC, r.reservation_time ASC`,
+            [req.user.id]
+        );
 
         res.json({
             success: true,
-            data: reservations
+            reservations
         });
     } catch (error) {
+        console.error('Erreur récupération réservations utilisateur:', error);
         res.status(500).json({
             success: false,
-            message: 'Erreur lors de la récupération de vos réservations',
-            error: error.message
+            message: 'Erreur lors de la récupération des réservations'
         });
     }
 };
 
+// Créer une nouvelle réservation
 const createReservation = async (req, res) => {
     try {
-        const { numberOfPeople, date, time, note } = req.body;
+        const { number_of_people, reservation_date, reservation_time, note } = req.body;
+        const user_id = req.user.id; // Récupéré du middleware auth
 
-        // Vérifier la disponibilité des tables
-        const availableTables = await findAvailableTables(numberOfPeople, date, time);
-
-        if (!availableTables) {
+        // Vérifier si la date est dans le futur
+        const reservationDateTime = new Date(reservation_date + ' ' + reservation_time);
+        if (reservationDateTime < new Date()) {
             return res.status(400).json({
                 success: false,
-                message: 'Pas de tables disponibles pour ce nombre de personnes à cette date et heure'
+                message: 'La date de réservation doit être dans le futur'
             });
         }
 
-        const reservation = await Reservation.create({
-            userId: req.user.id,
-            numberOfPeople,
-            date,
-            time,
-            note,
-            status: 'pending'
-        });
+        // Vérifier la disponibilité des tables
+        const [availableTables] = await db.query(
+            `SELECT t.* FROM tables t 
+            WHERE t.seats >= ? 
+            AND t.id NOT IN (
+                SELECT rt.table_id 
+                FROM reservations r 
+                JOIN reservation_tables rt ON r.id = rt.reservation_id 
+                WHERE r.reservation_date = ? 
+                AND r.reservation_time = ? 
+                AND r.status != 'cancelled'
+            )
+            ORDER BY t.seats ASC
+            LIMIT 1`,
+            [number_of_people, reservation_date, reservation_time]
+        );
 
-        // Associer les tables à la réservation
-        await reservation.setTables(availableTables);
+        if (availableTables.length === 0) {
+            return res.status(400).json({
+                success: false,
+                message: 'Aucune table disponible pour ce créneau'
+            });
+        }
+
+        // Créer la réservation
+        const [result] = await db.query(
+            'INSERT INTO reservations (user_id, number_of_people, reservation_date, reservation_time, note, status) VALUES (?, ?, ?, ?, ?, ?)',
+            [user_id, number_of_people, reservation_date, reservation_time, note, 'pending']
+        );
+
+        // Associer la table à la réservation
+        await db.query(
+            'INSERT INTO reservation_tables (reservation_id, table_id) VALUES (?, ?)',
+            [result.insertId, availableTables[0].id]
+        );
 
         res.status(201).json({
             success: true,
-            data: {
-                ...reservation.toJSON(),
-                tables: availableTables
+            message: 'Réservation créée avec succès',
+            reservation: {
+                id: result.insertId,
+                number_of_people,
+                reservation_date,
+                reservation_time,
+                note,
+                status: 'pending',
+                table: availableTables[0]
             }
         });
     } catch (error) {
-        res.status(400).json({
+        console.error('Erreur création réservation:', error);
+        res.status(500).json({
             success: false,
-            message: 'Erreur lors de la création de la réservation',
-            error: error.message
+            message: 'Erreur lors de la création de la réservation'
         });
     }
 };
 
-const updateReservation = async (req, res) => {
+// Mettre à jour le statut d'une réservation (admin)
+const updateReservationStatus = async (req, res) => {
     try {
         const { id } = req.params;
-        const { numberOfPeople, date, time, note } = req.body;
+        const { status } = req.body;
 
-        const reservation = await Reservation.findByPk(id, {
-            include: [{
-                model: Table,
-                as: 'tables'
-            }]
-        });
+        if (!['pending', 'confirmed', 'cancelled'].includes(status)) {
+            return res.status(400).json({
+                success: false,
+                message: 'Statut invalide'
+            });
+        }
 
-        if (!reservation) {
+        const [result] = await db.query(
+            'UPDATE reservations SET status = ? WHERE id = ?',
+            [status, id]
+        );
+
+        if (result.affectedRows === 0) {
             return res.status(404).json({
                 success: false,
                 message: 'Réservation non trouvée'
             });
         }
-
-        if (reservation.userId !== req.user.id && req.user.role !== 'admin') {
-            return res.status(403).json({
-                success: false,
-                message: 'Non autorisé à modifier cette réservation'
-            });
-        }
-
-        if (reservation.status !== 'pending') {
-            return res.status(400).json({
-                success: false,
-                message: 'Impossible de modifier une réservation confirmée ou annulée'
-            });
-        }
-
-        // Vérifier la disponibilité des tables si changement de date/heure/nombre de personnes
-        if (numberOfPeople !== reservation.numberOfPeople ||
-            date !== reservation.date ||
-            time !== reservation.time) {
-            const availableTables = await findAvailableTables(numberOfPeople, date, time);
-
-            if (!availableTables) {
-                return res.status(400).json({
-                    success: false,
-                    message: 'Pas de tables disponibles pour ce nombre de personnes à cette date et heure'
-                });
-            }
-
-            await reservation.setTables(availableTables);
-        }
-
-        await reservation.update({
-            numberOfPeople,
-            date,
-            time,
-            note
-        });
 
         res.json({
             success: true,
-            data: reservation
+            message: 'Statut de la réservation mis à jour'
         });
     } catch (error) {
-        res.status(400).json({
+        console.error('Erreur mise à jour statut:', error);
+        res.status(500).json({
             success: false,
-            message: 'Erreur lors de la modification de la réservation',
-            error: error.message
+            message: 'Erreur lors de la mise à jour du statut'
         });
     }
 };
 
-const deleteReservation = async (req, res) => {
+// Annuler une réservation (utilisateur)
+const cancelReservation = async (req, res) => {
     try {
         const { id } = req.params;
 
-        const reservation = await Reservation.findByPk(id);
+        // Vérifier que la réservation appartient à l'utilisateur
+        const [reservation] = await db.query(
+            'SELECT * FROM reservations WHERE id = ? AND user_id = ?',
+            [id, req.user.id]
+        );
 
-        if (!reservation) {
+        if (reservation.length === 0) {
             return res.status(404).json({
                 success: false,
                 message: 'Réservation non trouvée'
             });
         }
 
-        if (reservation.userId !== req.user.id && req.user.role !== 'admin') {
-            return res.status(403).json({
+        // Vérifier que la réservation n'est pas déjà passée
+        const reservationDateTime = new Date(reservation[0].reservation_date + ' ' + reservation[0].reservation_time);
+        if (reservationDateTime < new Date()) {
+            return res.status(400).json({
                 success: false,
-                message: 'Non autorisé à annuler cette réservation'
+                message: 'Impossible d\'annuler une réservation passée'
             });
         }
 
-        await reservation.update({ status: 'cancelled' });
+        await db.query(
+            'UPDATE reservations SET status = ? WHERE id = ?',
+            ['cancelled', id]
+        );
 
         res.json({
             success: true,
             message: 'Réservation annulée avec succès'
         });
     } catch (error) {
+        console.error('Erreur annulation réservation:', error);
         res.status(500).json({
             success: false,
-            message: 'Erreur lors de l\'annulation de la réservation',
-            error: error.message
-        });
-    }
-};
-
-const validateReservation = async (req, res) => {
-    try {
-        const { id } = req.params;
-
-        const reservation = await Reservation.findByPk(id);
-
-        if (!reservation) {
-            return res.status(404).json({
-                success: false,
-                message: 'Réservation non trouvée'
-            });
-        }
-
-        if (reservation.status !== 'pending') {
-            return res.status(400).json({
-                success: false,
-                message: 'Cette réservation ne peut pas être validée'
-            });
-        }
-
-        await reservation.update({ status: 'confirmed' });
-
-        res.json({
-            success: true,
-            message: 'Réservation confirmée avec succès',
-            data: reservation
-        });
-    } catch (error) {
-        res.status(500).json({
-            success: false,
-            message: 'Erreur lors de la validation de la réservation',
-            error: error.message
+            message: 'Erreur lors de l\'annulation de la réservation'
         });
     }
 };
 
 module.exports = {
     getAllReservations,
-    getMyReservations,
+    getUserReservations,
     createReservation,
-    updateReservation,
-    deleteReservation,
-    validateReservation
+    updateReservationStatus,
+    cancelReservation
 }; 

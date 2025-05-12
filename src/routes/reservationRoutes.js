@@ -1,45 +1,24 @@
 const express = require('express');
 const router = express.Router();
-const db = require('../db');
+const { auth, isAdmin } = require('../middleware/auth');
+const {
+    createReservation,
+    getAllReservations,
+    getUserReservations,
+    updateReservationStatus,
+    cancelReservation
+} = require('../controllers/reservationController');
 
-// GET toutes les réservations
-router.get('/', async (req, res) => {
-    try {
-        const [rows] = await db.query('SELECT * FROM reservations');
-        res.json({
-            success: true,
-            data: rows
-        });
-    } catch (error) {
-        res.status(500).json({
-            success: false,
-            message: 'Erreur lors de la récupération des réservations',
-            error: error.message
-        });
-    }
-});
+// Routes publiques
+// Aucune pour les réservations - tout nécessite une authentification
 
-// POST nouvelle réservation
-router.post('/', async (req, res) => {
-    try {
-        const { userId, numberOfPeople, date, time, note } = req.body;
-        const [result] = await db.query(
-            'INSERT INTO reservations (userId, numberOfPeople, date, time, note, status) VALUES (?, ?, ?, ?, ?, ?)',
-            [userId, numberOfPeople, date, time, note, 'pending']
-        );
-        
-        res.status(201).json({
-            success: true,
-            message: 'Réservation créée avec succès',
-            data: { id: result.insertId }
-        });
-    } catch (error) {
-        res.status(400).json({
-            success: false,
-            message: 'Erreur lors de la création de la réservation',
-            error: error.message
-        });
-    }
-});
+// Routes protégées (utilisateurs connectés)
+router.post('/', auth, createReservation);
+router.get('/my-reservations', auth, getUserReservations);
+router.put('/:id/cancel', auth, cancelReservation);
+
+// Routes admin
+router.get('/all', auth, isAdmin, getAllReservations);
+router.put('/:id/status', auth, isAdmin, updateReservationStatus);
 
 module.exports = router; 

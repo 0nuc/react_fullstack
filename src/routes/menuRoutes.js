@@ -1,21 +1,21 @@
 const express = require('express');
 const router = express.Router();
-const menuController = require('../controllers/menuController');
 const { auth, isAdmin } = require('../middleware/auth');
+const { getAllMenuItems, createMenuItem, updateMenuItem, deleteMenuItem } = require('../controllers/menuController');
 
-// GET /api/menu - Public
-router.get('/', menuController.getAllMenuItems);
+// Route publique pour obtenir le menu
+router.get('/', getAllMenuItems);
 
 // Routes protégées - Admin uniquement
 router.use(auth, isAdmin);
 
-// POST /api/menu - Créer un item
-router.post('/', menuController.createMenuItem);
+// Créer un nouvel item
+router.post('/', createMenuItem);
 
-// PUT /api/menu/:id - Modifier un item
-router.put('/:id', menuController.updateMenuItem);
+// Modifier un item
+router.put('/:id', updateMenuItem);
 
-// DELETE /api/menu/:id - Supprimer un item
-router.delete('/:id', menuController.deleteMenuItem);
+// Supprimer un item
+router.delete('/:id', deleteMenuItem);
 
 module.exports = router; 
