@@ -29,15 +29,7 @@ const auth = async (req, res, next) => {
     }
 };
 
-// const isAdmin = (req, res, next) => {
-//     if (req.user.role !== 'admin') {
-//         return res.status(403).json({
-//             success: false,
-//             message: 'Accès refusé. Droits administrateur requis.'
-//         });
-//     }
-//     next();
-// };
+
 
 module.exports = {
     auth,
